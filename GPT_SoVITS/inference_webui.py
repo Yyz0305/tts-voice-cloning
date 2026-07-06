@@ -30,6 +30,7 @@ import warnings
 
 import torch
 import torchaudio
+import soundfile as sf
 from text.LangSegmenter import LangSegmenter
 
 logging.getLogger("markdown_it").setLevel(logging.ERROR)
@@ -543,6 +544,7 @@ if model_version in {"v2Pro", "v2ProPlus"}:
     init_sv_cn()
 
 resample_transform_dict = {}
+converted_ref_audio_cache = {}
 
 
 def resample(audio_tensor, sr0, sr1, device):
@@ -553,12 +555,43 @@ def resample(audio_tensor, sr0, sr1, device):
     return resample_transform_dict[key](audio_tensor)
 
 
+def normalize_ref_audio_path(filename):
+    if not filename:
+        return filename
+    filename = os.fspath(filename)
+    try:
+        torchaudio.load(filename, num_frames=1)
+        return filename
+    except Exception:
+        pass
+
+    stat = os.stat(filename)
+    cache_key = "%s-%s-%s" % (os.path.abspath(filename), stat.st_mtime_ns, stat.st_size)
+    if cache_key in converted_ref_audio_cache and os.path.exists(converted_ref_audio_cache[cache_key]):
+        return converted_ref_audio_cache[cache_key]
+
+    os.makedirs("TEMP/ref_audio_wav", exist_ok=True)
+    safe_name = re.sub(r"[^0-9A-Za-z_.-]+", "_", os.path.splitext(os.path.basename(filename))[0]).strip("_")
+    if not safe_name:
+        safe_name = "ref_audio"
+    wav_path = os.path.abspath(
+        os.path.join("TEMP/ref_audio_wav", "%s_%s.wav" % (safe_name[:40], abs(hash(cache_key))))
+    )
+
+    audio, sr = librosa.load(filename, sr=None, mono=True)
+    sf.write(wav_path, audio, sr, subtype="PCM_16")
+    converted_ref_audio_cache[cache_key] = wav_path
+    print(i18n("参考音频已转换为WAV:"), wav_path)
+    return wav_path
+
+
 def get_spepc(hps, filename, dtype, device, is_v2pro=False):
     # audio = load_audio(filename, int(hps.data.sampling_rate))
 
     # audio, sampling_rate = librosa.load(filename, sr=int(hps.data.sampling_rate))
     # audio = torch.FloatTensor(audio)
 
+    filename = normalize_ref_audio_path(filename)
     sr1 = int(hps.data.sampling_rate)
     audio, sr0 = torchaudio.load(filename)
     if sr0 != sr1:
@@ -808,7 +841,7 @@ def get_tts_wav(
 ):
     global cache
     if ref_wav_path:
-        pass
+        ref_wav_path = normalize_ref_audio_path(ref_wav_path)
     else:
         gr.Warning(i18n("请上传参考音频"))
     if text:
